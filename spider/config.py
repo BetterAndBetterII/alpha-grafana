@@ -45,5 +45,9 @@ API_DICT = {
          'secret': os.environ.get(f'account_{account}_secret'), }
     for account in accounts}
 
+proxy = {
+    'http': os.environ.get('http_proxy', ''),
+    'https': os.environ.get('https_proxy', '')
+}
 # print(INITIAL_CASH)
 # print(API_DICT)

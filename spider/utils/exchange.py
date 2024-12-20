@@ -1,7 +1,7 @@
 """function"""
 
 from binance import Client
-from config import API_DICT
+from config import API_DICT, proxy
 import pandas as pd
 import time
 import math
@@ -24,7 +24,8 @@ class BinanceTrade(object):
         hh
         :return:
         """
-        return Client(API_DICT[self.account_name]['apiKey'], API_DICT[self.account_name]['secret'])
+        print(f"Using proxy: {proxy}")
+        return Client(API_DICT[self.account_name]['apiKey'], API_DICT[self.account_name]['secret'], {'proxies': proxy})
 
     @retry(3,_sleep_seconds=1)
     def future_balance(self):
