@@ -1,19 +1,18 @@
 """币安账户监控相关函数"""
 
-import pandas as pd
-from utils.exchange import BinanceTrade
-from datetime import datetime
-
-from sqlalchemy import create_engine
-# from unicorn_binance_websocket_api.unicorn_binance_websocket_api_manager import BinanceWebSocketApiManager
-from unicorn_binance_websocket_api.manager import BinanceWebSocketApiManager
-
-import time
-import threading
-from config import database_config as dc_
-from config import API_DICT, INITIAL_CASH
 import json
+import time
+from datetime import datetime
 from datetime import timedelta
+
+import pandas as pd
+from binance.um_futures import UMFutures
+from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
+from sqlalchemy import create_engine
+
+from config import API_DICT, INITIAL_CASH
+from config import database_config as dc_
+from utils.exchange import BinanceTrade
 
 pd.set_option('display.width', 1000)
 pd.set_option('display.max_rows', None)
@@ -169,25 +168,21 @@ class Order(object):
                     df.to_sql(name=table_name, con=database_connect, if_exists='append')
                 database_connect.dispose()  # 释放数据库连接
 
-    @staticmethod
-    def print_stream_buffer_data_full(binance_websocket_api_manager, stream_id, name):
+    def print_stream_buffer_data_full(self, _, message):
         """
-        :param name:
-        :param binance_websocket_api_manager:
-        :param stream_id:
+        :param message:
         """
         while True:
-            if binance_websocket_api_manager.is_manager_stopping():
-                exit(0)
-            oldest_stream_data_from_stream_buffer = binance_websocket_api_manager.pop_stream_data_from_stream_buffer(
-                stream_id)
+            oldest_stream_data_from_stream_buffer = message
             if oldest_stream_data_from_stream_buffer is False:
                 time.sleep(0.01)
             else:
+                data = json.loads(oldest_stream_data_from_stream_buffer)
+                if 'result' in data and data['result'] is None:
+                    return
                 database_connect = create_engine(
                     f"mysql://{dc_['user']}:{dc_['passwd']}@{dc_['host']}:{dc_['port']}/{dc_['database']}")
-                table_name = f"{name}_order"
-                data = json.loads(oldest_stream_data_from_stream_buffer)
+                table_name = f"{self.account_name}_order"
                 if data['e'] == 'ORDER_TRADE_UPDATE':
                     df = pd.DataFrame(data['o'], index=[0])
                     df['notional'] = float(df['ap']) * float(df['z'])
@@ -199,17 +194,12 @@ class Order(object):
                     df.to_sql(name=table_name, con=database_connect, if_exists='append')
                 database_connect.dispose()  # 释放数据库连接
 
-    def print_stream_buffer_data_full_account(self, binance_websocket_api_manager, stream_id, name):
+    def print_stream_buffer_data_full_account(self, _, message):
         """
-        :param name:
-        :param binance_websocket_api_manager:
-        :param stream_id:
+        :param message_item:
         """
         while True:
-            if binance_websocket_api_manager.is_manager_stopping():
-                exit(0)
-            oldest_stream_data_from_stream_buffer = binance_websocket_api_manager.pop_stream_data_from_stream_buffer(
-                stream_id)
+            oldest_stream_data_from_stream_buffer = message
             if oldest_stream_data_from_stream_buffer is False:
                 time.sleep(0.01)
             else:
@@ -217,6 +207,8 @@ class Order(object):
                 #     f"mysql://{dc_['user']}:{dc_['passwd']}@{dc_['host'}/:{dc_['port'{dc_['database']}")
                 # table_name = f"{name}_order"
                 data = json.loads(oldest_stream_data_from_stream_buffer)
+                if 'result' in data and data['result'] is None:
+                    return
                 if data['e'] == 'ACCOUNT_UPDATE':
 
                     database_connect = create_engine(
@@ -263,35 +255,101 @@ class Order(object):
                     # df['time'] = pd.to_datetime(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                     # df.to_sql(name=table_name, con=database_connect, if_exists='append')
 
-    def order_record_booking(self):
+    def order_record_booking_rest(self):
         """
-        获取账户订单信息
+        使用REST API获取账户订单信息
         """
-        binance_com_websocket_api_manager = BinanceWebSocketApiManager(exchange="binance.com-futures")
+        client = UMFutures(self.api_key, self.api_secret)
+        
+        # 获取所有交易对的信息
+        exchange_info = client.exchange_info()
+        symbols = [s['symbol'] for s in exchange_info['symbols']]
+        
+        all_trades = []
+        for symbol in symbols:
+            try:
+                # 获取每个交易对的最近成交记录
+                trades = client.get_account_trades(symbol=symbol)
+                if trades:
+                    all_trades.extend(trades)
+            except Exception as e:
+                print(f"获取 {symbol} 交易记录时出错: {e}")
+                continue
+        
+        if all_trades:
+            database_connect = create_engine(
+                f"mysql://{dc_['user']}:{dc_['passwd']}@{dc_['host']}:{dc_['port']}/{dc_['database']}")
+            
+            df = pd.DataFrame(all_trades)
+            df['notional'] = df['price'].astype(float) * df['qty'].astype(float)
+            
+            # 重命名和选择需要的列
+            df = df.rename(columns={
+                'symbol': 'symbol',
+                'side': 'side',
+                'price': 'filled_price',
+                'qty': 'filled_quantity',
+                'realizedPnl': 'profit',
+                'time': 'order_time'
+            })
+            
+            # 处理时间格式
+            df['order_time'] = pd.to_datetime(df['order_time'], unit='ms') + timedelta(hours=8)
+            df['time'] = pd.to_datetime(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            
+            # 保存到数据库
+            df.to_sql(name=f"{self.account_name}_order", con=database_connect, if_exists='append', index=False)
+            database_connect.dispose()
 
-        # create the userData streams
-        bob_stream_id = binance_com_websocket_api_manager.create_stream('arr', '!userData', stream_label="Bob",
-                                                                        stream_buffer_name=True,
-                                                                        api_key=self.api_key,
-                                                                        api_secret=self.api_secret)
-        # start a worker process to move the received stream_data from the stream_buffer to a print function
-        worker_thread = threading.Thread(target=self.print_stream_buffer_data, args=(binance_com_websocket_api_manager,
-                                                                                     bob_stream_id, self.account_name))
-        worker_thread.start()
+    def account_record_booking_rest(self):
+        """
+        使用REST API获取账户信息
+        """
+        client = UMFutures(self.api_key, self.api_secret)
+        
+        # 获取账户信息
+        account_info = client.account()
+        
+        if account_info:
+            database_connect = create_engine(
+                f"mysql://{dc_['user']}:{dc_['passwd']}@{dc_['host']}:{dc_['port']}/{dc_['database']}")
+                
+            try:
+                # 获取历史存取款记录
+                sql = f"select * from {self.account_name}_balance"
+                old_ = pd.read_sql(sql, con=database_connect)
+                dd = old_.tail(1)
+                dd.reset_index(inplace=True)
+                deposit = dd.loc[0, 'deposit_cash']
+                withdraw = dd.loc[0, 'withdraw_cash']
+            except:
+                withdraw = 0.0
+                deposit = 0.0
+                
+            # 更新账户余额信息
+            psy_ns_account = Account(self.account_name)
+            df = psy_ns_account.account_balance(withdraw_cash=withdraw, deposit_cash=deposit)
+            df.to_sql(name=f'{self.account_name}_balance', if_exists='append', con=database_connect, index=False)
+            
+            database_connect.dispose()
+
+    def order_record_booking(self):
+        client = UMFutures(self.api_key, self.api_secret)
+        response = client.new_listen_key()
+        ws_client = UMFuturesWebsocketClient(on_message=self.print_stream_buffer_data_full)
+
+        ws_client.user_data(
+            listen_key=response["listenKey"],
+            id=1,
+        )
 
     def account_record_booking(self):
-        """
-        获取账户订单信息
-        """
-        binance_com_websocket_api_manager = BinanceWebSocketApiManager(exchange="binance.com-futures")
+        client = UMFutures(self.api_key, self.api_secret)
+        response = client.new_listen_key()
 
-        # create the userData streams
-        bob_stream_id = binance_com_websocket_api_manager.create_stream('arr', '!userData', stream_label="Bob",
-                                                                        stream_buffer_name=True,
-                                                                        api_key=self.api_key,
-                                                                        api_secret=self.api_secret)
-        # start a worker process to move the received stream_data from the stream_buffer to a print function
-        worker_thread = threading.Thread(target=self.print_stream_buffer_data_full_account,
-                                         args=(binance_com_websocket_api_manager,
-                                               bob_stream_id, self.account_name))
-        worker_thread.start()
+        ws_client = UMFuturesWebsocketClient(on_message=self.print_stream_buffer_data_full_account)
+
+        ws_client.user_data(
+            listen_key=response["listenKey"],
+            id=1,
+        )

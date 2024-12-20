@@ -3,7 +3,7 @@ import schedule
 import time
 from utils.alert import WeChat
 from function import Account, Order
-from config import database_config as dc_, API_DICT
+from config import database_config as dc_, API_DICT, webhook_url
 
 import pymysql
 import pandas as pd
@@ -94,7 +94,7 @@ def future_order():
         psy_ns_account.account_record_booking()
 
 
-alert = WeChat('NsSupervisor')
+alert = WeChat('NsSupervisor', webhook_url)
 account_list = API_DICT.keys()
 future_order()
 

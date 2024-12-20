@@ -25,7 +25,7 @@ database_config = {
 
 keys = dict(os.environ).keys()
 
-keys = [x for x in keys if x.startswith('account_')]
+keys = [x for x in keys if x.lower().startswith('account_')]
 
 
 def get_account_name(key):
@@ -49,5 +49,7 @@ proxy = {
     'http': os.environ.get('http_proxy', ''),
     'https': os.environ.get('https_proxy', '')
 }
+
+webhook_url = os.environ.get('webhook_url', '')
 # print(INITIAL_CASH)
 # print(API_DICT)

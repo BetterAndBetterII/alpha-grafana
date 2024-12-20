@@ -1,6 +1,6 @@
 """function"""
 
-from binance import Client
+from binance.client import Client
 from config import API_DICT, proxy
 import pandas as pd
 import time
